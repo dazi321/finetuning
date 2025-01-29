@@ -1,21 +1,3 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 const
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
 import asyncio
 import datetime as dt
 import math
@@ -98,8 +80,6 @@ async def load_starting_model(
 
 
 async def main(config: bt.config):
-    raise NotImplementedError("You must implement your own training logic in miner.py")
-
     # Create bittensor objects.
     bt.logging.set_warning()
     taoverse_utils.logging.reinitialize()
@@ -199,7 +179,21 @@ async def main(config: bt.config):
     try:
         while epoch_step < config.num_epochs or config.num_epochs == -1:
             # Implement your training logic here.
-            avg_deviation = math.inf
+            model.train()
+            for batch in training_dataloader:
+                outputs = model(**batch)
+                loss = outputs.loss
+                loss.backward()
+                
+                n_acc_steps += 1
+                if n_acc_steps % accumulation_steps == 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+            avg_deviation = evaluate_model(model, validation_dataloader)
+
+            epoch_step += 1
 
             # Check if the average deviation of this epoch is the best we've seen so far
             if avg_deviation < best_avg_deviation:
