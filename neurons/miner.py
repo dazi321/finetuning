@@ -25,11 +25,6 @@ import finetune as ft
 from neurons import config as neuron_config
 import taoverse.utilities.logging as logging
 
-hf_token = os.getenv("HF_TOKEN")
-if not hf_token:
-    raise ValueError("HuggingFace token not set. Please add HF_TOKEN to your .env file.")
-HuggingFaceModelStore.set_access_token(hf_token)  # Assuming you have a function for this.
-
 
 load_dotenv()  # take environment variables from .env.
 
@@ -103,7 +98,12 @@ async def main(config: bt.config):
     my_uid = None
     if not config.offline:
         my_uid = metagraph_utils.assert_registered(wallet, metagraph)
-        HuggingFaceModelStore.assert_access_token_exists()
+
+        # Ensure HF_ACCESS_TOKEN is set in .env
+        hf_token = os.getenv("HF_ACCESS_TOKEN")
+        if not hf_token:
+            raise ValueError("HuggingFace token not set. Please add HF_ACCESS_TOKEN to your .env file.")
+        HuggingFaceModelStore.set_access_token(hf_token)
 
     # Data comes from Subnet 1's wandb project. Make sure we're logged in
     wandb_utils.login()
@@ -268,3 +268,4 @@ if __name__ == "__main__":
     else:
         print(config)
         asyncio.run(main(config))
+        
