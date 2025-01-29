@@ -25,6 +25,11 @@ import finetune as ft
 from neurons import config as neuron_config
 import taoverse.utilities.logging as logging
 
+hf_token = os.getenv("HF_TOKEN")
+if not hf_token:
+    raise ValueError("HuggingFace token not set. Please add HF_TOKEN to your .env file.")
+HuggingFaceModelStore.set_access_token(hf_token)  # Assuming you have a function for this.
+
 
 load_dotenv()  # take environment variables from .env.
 
