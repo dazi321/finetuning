@@ -1,105 +1,4 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 const
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-import asyncio
-import datetime as dt
-import math
-import os
-import typing
-
-import bittensor as bt
-import torch
-import wandb
-from dotenv import load_dotenv
-from taoverse.metagraph import utils as metagraph_utils
-from taoverse.model.data import Model
-from taoverse.model.storage.chain.chain_model_metadata_store import (
-    ChainModelMetadataStore,
-)
-from taoverse.model.storage.hugging_face.hugging_face_model_store import (
-    HuggingFaceModelStore,
-)
-from taoverse.model.storage.model_metadata_store import ModelMetadataStore
-from taoverse.utilities import utils as taoverse_utils
-from taoverse.utilities import wandb as wandb_utils
-
-import constants
-import finetune as ft
-from neurons import config as neuron_config
-import taoverse.utilities.logging as logging
-
-
-load_dotenv()  # take environment variables from .env.
-
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
-
-
-async def load_starting_model(
-    config: bt.config,
-    metagraph: bt.metagraph,
-    metadata_store: ModelMetadataStore,
-    kwargs: typing.Dict[str, typing.Any],
-) -> Model:
-    """Loads the model to train based on the provided config."""
-
-    # Initialize the model based on the best on the network.
-    if config.load_best:
-        model = await ft.mining.load_best_model(
-            download_dir=config.model_dir,
-            competition_id=config.competition_id,
-            metagraph=metagraph,
-            metadata_store=metadata_store,
-        )
-        logging.info(
-            f"Training with best model from competition: {config.competition_id}. Model={str(model)}"
-        )
-        return model
-
-    # Initialize the model based on a passed uid.
-    if config.load_uid is not None:
-        # Sync the state from the passed uid.
-        model = await ft.mining.load_remote_model(
-            config.load_uid,
-            config.model_dir,
-            metagraph=metagraph,
-            metadata_store=metadata_store,
-        )
-        logging.info(
-            f"Training with model from uid: {config.load_uid}. Model={str(model)}"
-        )
-        return model
-
-    # Check if we should load a model from a local directory.
-    if config.load_model_dir:
-        model = ft.mining.load_local_model(
-            config.load_model_dir, config.competition_id, kwargs
-        )
-        logging.info(f"Training with model from disk. Model={str(model)}")
-        return model
-
-    raise RuntimeError(
-        "No starting model specified, pass either --load_best, --load_uid, or --load_model_dir"
-    )
-
-
 async def main(config: bt.config):
-    raise NotImplementedError("You must implement your own training logic in miner.py")
-
     # Create bittensor objects.
     bt.logging.set_warning()
     taoverse_utils.logging.reinitialize()
@@ -198,21 +97,43 @@ async def main(config: bt.config):
 
     try:
         while epoch_step < config.num_epochs or config.num_epochs == -1:
-            # Implement your training logic here.
-            avg_deviation = math.inf
+            # Your training logic here
+            optimizer.zero_grad()
+            
+            # Dummy data (replace with your actual data and forward pass)
+            input_data = torch.randn(config.batch_size, config.input_dim).to(config.device)
+            target_data = torch.randn(config.batch_size, config.output_dim).to(config.device)
 
-            # Check if the average deviation of this epoch is the best we've seen so far
-            if avg_deviation < best_avg_deviation:
-                best_avg_deviation = avg_deviation  # Update the best average deviation
+            # Forward pass
+            outputs = model(input_data)
+            loss = compute_loss(outputs, target_data)
 
-                logging.info(f"New best average deviation: {best_avg_deviation}.")
+            # Backward pass and optimization
+            loss.backward()
+            optimizer.step()
 
-                # Save the model to your mining dir.
-                logging.info(f"Saving model to path: {model_dir}.")
+            global_step += 1
+            n_acc_steps += 1
+
+            # Log metrics
+            if use_wandb and global_step % config.log_interval == 0:
+                wandb.log({
+                    "loss": loss.item(),
+                    "global_step": global_step,
+                    "epoch_step": epoch_step,
+                })
+
+            # Save the model periodically
+            if global_step % config.save_interval == 0:
+                logging.info(f"Saving model at global step: {global_step}")
                 ft.mining.save(model, model_dir)
 
+            epoch_step += 1
+            logging.info(f"Epoch step: {epoch_step}, Global step: {global_step}")
+
         logging.info("Finished training")
-        # Push the model to your run.
+
+        # Push the model to hugging face if criteria are met
         if not config.offline:
             if best_avg_deviation < config.avg_loss_upload_threshold:
                 logging.info(
@@ -244,7 +165,6 @@ async def main(config: bt.config):
         # Important step.
         if wandb_run:
             wandb_run.finish()
-
 
 if __name__ == "__main__":
     # Parse and print configuration
