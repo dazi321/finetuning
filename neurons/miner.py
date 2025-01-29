@@ -268,4 +268,11 @@ async def main(config: bt.config):
             wandb_run.finish()
 
 if __name__ == "__main__":
-    asyncio.run(main(config))
+    # Parse and print configuration
+    config = neuron_config.miner_config()
+
+    if config.list_competitions:
+        print(constants.COMPETITION_SCHEDULE_BY_BLOCK)
+    else:
+        print(config)
+        asyncio.run(main(config))
