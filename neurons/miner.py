@@ -268,3 +268,4 @@ async def main(config: bt.config):
             wandb_run.finish()
 
 if __name__ == "__main__":
+    asyncio.run(main(config))
