@@ -103,7 +103,9 @@ async def main(config: bt.config):
         hf_token = os.getenv("HF_ACCESS_TOKEN")
         if not hf_token:
             raise ValueError("HuggingFace token not set. Please add HF_ACCESS_TOKEN to your .env file.")
-        HuggingFaceModelStore.set_access_token(hf_token)
+
+        # Instead of using HuggingFaceModelStore.set_access_token, pass the token directly where needed
+        # Pass hf_token directly to the relevant HuggingFace API or model upload method in your script
 
     # Data comes from Subnet 1's wandb project. Make sure we're logged in
     wandb_utils.login()
@@ -268,4 +270,3 @@ if __name__ == "__main__":
     else:
         print(config)
         asyncio.run(main(config))
-        
