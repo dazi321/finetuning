@@ -262,5 +262,6 @@ async def main(config: bt.config):
             )
 
     finally:
-        # Important step.
-       
+        # Finish the Wandb run if it's been initialized
+        if wandb_run:
+            wandb_run.finish()
