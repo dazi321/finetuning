@@ -111,6 +111,13 @@ async def train_one_epoch(
     return avg_deviation
 
 async def main(config: bt.config):
+    # Set your Hugging Face repository ID
+    config.hf_repo_id = 'DavidKello/Finetuning-repository'
+
+    # Set your Wandb project and entity
+    config.wandb_project = 'finetuning-subnet'
+    config.wandb_entity = 'dazicopy-google'
+
     # Create bittensor objects.
     bt.logging.set_warning()
     taoverse_utils.logging.reinitialize()
@@ -261,11 +268,3 @@ async def main(config: bt.config):
             wandb_run.finish()
 
 if __name__ == "__main__":
-    # Parse and print configuration
-    config = neuron_config.miner_config()
-
-    if config.list_competitions:
-        print(constants.COMPETITION_SCHEDULE_BY_BLOCK)
-    else:
-        print(config)
-        asyncio.run(main(config))
