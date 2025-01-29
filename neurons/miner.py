@@ -3,6 +3,7 @@ import datetime as dt
 import math
 import os
 import typing
+import subprocess
 
 import bittensor as bt
 import torch
@@ -24,6 +25,7 @@ import constants
 import finetune as ft
 from neurons import config as neuron_config
 import taoverse.utilities.logging as logging
+from huggingface_hub import HfApi, HfFolder, Repository
 
 
 load_dotenv()  # take environment variables from .env.
@@ -94,18 +96,18 @@ async def main(config: bt.config):
         wallet=wallet,
     )
 
-    # If running online, make sure the miner is registered, has a hugging face access token, and has provided a repo id.
+    # If running online, make sure the miner is registered.
     my_uid = None
     if not config.offline:
         my_uid = metagraph_utils.assert_registered(wallet, metagraph)
 
-        # Ensure HF_ACCESS_TOKEN is set in .env
-        hf_token = os.getenv("HF_ACCESS_TOKEN")
-        if not hf_token:
-            raise ValueError("HuggingFace token not set. Please add HF_ACCESS_TOKEN to your .env file.")
-
-        # Instead of using HuggingFaceModelStore.set_access_token, pass the token directly where needed
-        # Pass hf_token directly to the relevant HuggingFace API or model upload method in your script
+        # Ensure Hugging Face CLI login is successful
+        try:
+            # Try to login using the Hugging Face CLI
+            subprocess.run(["huggingface-cli", "login"], check=True)
+            logging.info("Successfully logged in to Hugging Face via CLI.")
+        except subprocess.CalledProcessError:
+            raise RuntimeError("Hugging Face CLI login failed. Please log in using `huggingface-cli login`.")
 
     # Data comes from Subnet 1's wandb project. Make sure we're logged in
     wandb_utils.login()
@@ -231,42 +233,34 @@ async def main(config: bt.config):
         if not config.offline:
             if best_avg_deviation < config.avg_loss_upload_threshold:
                 logging.info(
-                    f"Trained model had a best_avg_deviation of {best_avg_deviation} which is below the threshold of {config.avg_loss_upload_threshold}. Uploading to hugging face. "
+                    f"Trained model had a best_avg_deviation of {best_avg_deviation} which is below the threshold of {config.avg_loss_upload_threshold}. Uploading to Hugging Face. "
                 )
 
                 # First, reload the best model from the training run.
                 model_to_upload = ft.mining.load_local_model(
                     model_dir, config.competition_id, model_constraints.kwargs
                 )
-                await ft.mining.push(
-                    model_to_upload,
-                    config.hf_repo_id,
-                    config.competition_id,
-                    wallet,
-                    update_repo_visibility=config.update_repo_visibility,
-                    metadata_store=chain_metadata_store,
-                )
+
+                # Upload model using the Hugging Face API
+                api = HfApi()
+                repo_id = config.hf_repo_id
+
+                # Clone the repo to the local directory
+                repo = Repository(local_dir=model_dir, clone_from=repo_id)
+
+                # Upload the model to Hugging Face
+                repo.push_to_hub(commit_message="Upload fine-tuned model", blocking=True)
+
+                logging.info(f"Model uploaded to Hugging Face repository: {repo_id}")
             else:
                 logging.info(
-                    f"This training run achieved a best_avg_deviation={best_avg_deviation}, which did not meet the upload threshold. Not uploading to hugging face."
+                    f"This training run achieved a best_avg_deviation={best_avg_deviation}, which did not meet the upload threshold. Not uploading to Hugging Face."
                 )
         else:
             logging.info(
-                "Not uploading to hugging face because --offline was specified."
+                "Not uploading to Hugging Face because --offline was specified."
             )
 
     finally:
         # Important step.
-        if wandb_run:
-            wandb_run.finish()
-
-
-if __name__ == "__main__":
-    # Parse and print configuration
-    config = neuron_config.miner_config()
-
-    if config.list_competitions:
-        print(constants.COMPETITION_SCHEDULE_BY_BLOCK)
-    else:
-        print(config)
-        asyncio.run(main(config))
+       
