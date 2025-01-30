@@ -3,7 +3,6 @@ import datetime as dt
 import math
 import os
 import typing
-import subprocess
 
 import bittensor as bt
 import torch
@@ -25,7 +24,6 @@ import constants
 import finetune as ft
 from neurons import config as neuron_config
 import taoverse.utilities.logging as logging
-from huggingface_hub import HfApi, HfFolder, Repository
 
 
 load_dotenv()  # take environment variables from .env.
@@ -96,18 +94,11 @@ async def main(config: bt.config):
         wallet=wallet,
     )
 
-    # If running online, make sure the miner is registered.
+    # If running online, make sure the miner is registered, has a hugging face access token, and has provided a repo id.
     my_uid = None
     if not config.offline:
         my_uid = metagraph_utils.assert_registered(wallet, metagraph)
-
-        # Ensure Hugging Face CLI login is successful
-        try:
-            # Try to login using the Hugging Face CLI
-            subprocess.run(["huggingface-cli", "login"], check=True)
-            logging.info("Successfully logged in to Hugging Face via CLI.")
-        except subprocess.CalledProcessError:
-            raise RuntimeError("Hugging Face CLI login failed. Please log in using `huggingface-cli login`.")
+        HuggingFaceModelStore.assert_access_token_exists()
 
     # Data comes from Subnet 1's wandb project. Make sure we're logged in
     wandb_utils.login()
@@ -188,43 +179,42 @@ async def main(config: bt.config):
     try:
         while epoch_step < config.num_epochs or config.num_epochs == -1:
             model.train()
-            optimizer.zero_grad()
+            total_loss = 0
+            num_batches = 0
 
-            # Forward pass: Assume you have a dataset or dataloader to work with
-            inputs = tokenizer(config.dataset)  # Replace this with your actual input data
-            outputs = model(inputs)  # Modify as per your model's input/output structure
-
-            loss = outputs.loss  # Assuming your model returns a loss
-            loss.backward()
-
-            # Gradient accumulation
-            n_acc_steps += 1
-            if n_acc_steps >= accumulation_steps:
-                optimizer.step()
+            for batch in train_dataloader:  # Assuming `train_dataloader` is defined
                 optimizer.zero_grad()
-                n_acc_steps = 0
 
-            global_step += 1
+                # Forward pass
+                inputs = batch['input_ids'].to(config.device)
+                labels = batch['labels'].to(config.device)
+                outputs = model(inputs)
+                
+                # Compute loss (you can use any loss function)
+                loss = model.compute_loss(outputs, labels)
+                total_loss += loss.item()
 
-            avg_deviation = loss.item()  # Use loss as a measure for deviation in this case
+                # Backward pass
+                loss.backward()
 
-            # Check if the average deviation of this epoch is the best we've seen so far
-            if avg_deviation < best_avg_deviation:
-                best_avg_deviation = avg_deviation  # Update the best average deviation
+                # Accumulate gradients if necessary
+                if (n_acc_steps + 1) % accumulation_steps == 0:
+                    optimizer.step()
+                    n_acc_steps = 0
+                else:
+                    n_acc_steps += 1
 
+                num_batches += 1
+
+            avg_loss = total_loss / num_batches
+            logging.info(f"Epoch {epoch_step} - Average Loss: {avg_loss}")
+
+            # Save model if it has improved
+            if avg_loss < best_avg_deviation:
+                best_avg_deviation = avg_loss
                 logging.info(f"New best average deviation: {best_avg_deviation}.")
-
-                # Save the model to your mining dir.
                 logging.info(f"Saving model to path: {model_dir}.")
                 ft.mining.save(model, model_dir)
-
-            # Log to wandb if enabled
-            if use_wandb:
-                wandb.log({"loss": loss.item(), "avg_deviation": avg_deviation})
-
-            # Optional: early stopping or other criteria for stopping training
-            if epoch_step >= config.num_epochs:
-                break
 
             epoch_step += 1
 
@@ -233,35 +223,42 @@ async def main(config: bt.config):
         if not config.offline:
             if best_avg_deviation < config.avg_loss_upload_threshold:
                 logging.info(
-                    f"Trained model had a best_avg_deviation of {best_avg_deviation} which is below the threshold of {config.avg_loss_upload_threshold}. Uploading to Hugging Face. "
+                    f"Trained model had a best_avg_deviation of {best_avg_deviation} which is below the threshold of {config.avg_loss_upload_threshold}. Uploading to hugging face."
                 )
 
                 # First, reload the best model from the training run.
                 model_to_upload = ft.mining.load_local_model(
                     model_dir, config.competition_id, model_constraints.kwargs
                 )
-
-                # Upload model using the Hugging Face API
-                api = HfApi()
-                repo_id = config.hf_repo_id
-
-                # Clone the repo to the local directory
-                repo = Repository(local_dir=model_dir, clone_from=repo_id)
-
-                # Upload the model to Hugging Face
-                repo.push_to_hub(commit_message="Upload fine-tuned model", blocking=True)
-
-                logging.info(f"Model uploaded to Hugging Face repository: {repo_id}")
+                await ft.mining.push(
+                    model_to_upload,
+                    config.hf_repo_id,
+                    config.competition_id,
+                    wallet,
+                    update_repo_visibility=config.update_repo_visibility,
+                    metadata_store=chain_metadata_store,
+                )
             else:
                 logging.info(
-                    f"This training run achieved a best_avg_deviation={best_avg_deviation}, which did not meet the upload threshold. Not uploading to Hugging Face."
+                    f"This training run achieved a best_avg_deviation={best_avg_deviation}, which did not meet the upload threshold. Not uploading to hugging face."
                 )
         else:
             logging.info(
-                "Not uploading to Hugging Face because --offline was specified."
+                "Not uploading to hugging face because --offline was specified."
             )
 
     finally:
-        # Finish the Wandb run if it's been initialized
+        # Important step.
         if wandb_run:
             wandb_run.finish()
+
+
+if __name__ == "__main__":
+    # Parse and print configuration
+    config = neuron_config.miner_config()
+
+    if config.list_competitions:
+        print(constants.COMPETITION_SCHEDULE_BY_BLOCK)
+    else:
+        print(config)
+        asyncio.run(main(config))
