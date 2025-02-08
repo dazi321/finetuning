@@ -25,11 +25,9 @@ import finetune as ft
 from neurons import config as neuron_config
 import taoverse.utilities.logging as logging
 
-
 load_dotenv()  # take environment variables from .env.
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-
 
 async def load_starting_model(
     config: bt.config,
@@ -37,9 +35,6 @@ async def load_starting_model(
     metadata_store: ModelMetadataStore,
     kwargs: typing.Dict[str, typing.Any],
 ) -> Model:
-    """Loads the model to train based on the provided config."""
-
-    # Initialize the model based on the best on the network.
     if config.load_best:
         model = await ft.mining.load_best_model(
             download_dir=config.model_dir,
@@ -47,26 +42,19 @@ async def load_starting_model(
             metagraph=metagraph,
             metadata_store=metadata_store,
         )
-        logging.info(
-            f"Training with best model from competition: {config.competition_id}. Model={str(model)}"
-        )
+        logging.info(f"Training with best model from competition: {config.competition_id}. Model={str(model)}")
         return model
 
-    # Initialize the model based on a passed uid.
     if config.load_uid is not None:
-        # Sync the state from the passed uid.
         model = await ft.mining.load_remote_model(
             config.load_uid,
             config.model_dir,
             metagraph=metagraph,
             metadata_store=metadata_store,
         )
-        logging.info(
-            f"Training with model from uid: {config.load_uid}. Model={str(model)}"
-        )
+        logging.info(f"Training with model from uid: {config.load_uid}. Model={str(model)}")
         return model
 
-    # Check if we should load a model from a local directory.
     if config.load_model_dir:
         model = ft.mining.load_local_model(
             config.load_model_dir, config.competition_id, kwargs
@@ -74,13 +62,9 @@ async def load_starting_model(
         logging.info(f"Training with model from disk. Model={str(model)}")
         return model
 
-    raise RuntimeError(
-        "No starting model specified, pass either --load_best, --load_uid, or --load_model_dir"
-    )
-
+    raise RuntimeError("No starting model specified, pass either --load_best, --load_uid, or --load_model_dir")
 
 async def main(config: bt.config):
-    # Create bittensor objects.
     bt.logging.set_warning()
     taoverse_utils.logging.reinitialize()
     taoverse_utils.configure_logging(config)
@@ -94,63 +78,41 @@ async def main(config: bt.config):
         wallet=wallet,
     )
 
-    # If running online, make sure the miner is registered, has a hugging face access token, and has provided a repo id.
     my_uid = None
     if not config.offline:
         my_uid = metagraph_utils.assert_registered(wallet, metagraph)
         HuggingFaceModelStore.assert_access_token_exists()
 
-    # Data comes from Subnet 1's wandb project. Make sure we're logged in
     wandb_utils.login()
 
-    # Create a unique run id for this run.
     run_id = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_dir = ft.mining.model_path(config.model_dir, run_id)
     os.makedirs(model_dir, exist_ok=True)
 
-    use_wandb = False
-    if not config.offline:
-        if config.wandb_project is None or config.wandb_entity is None:
-            logging.warning(
-                "Wandb project or entity not specified. This run will not be logged to wandb"
-            )
-        else:
-            use_wandb = True
+    use_wandb = not config.offline and config.wandb_project and config.wandb_entity
 
     model_constraints = constants.MODEL_CONSTRAINTS_BY_COMPETITION_ID.get(
         config.competition_id, None
     )
-
     if not model_constraints:
         raise RuntimeError(f"No competition found for {config.competition_id}")
+
     kwargs = model_constraints.kwargs.copy()
     kwargs["torch_dtype"] = (
         torch.bfloat16 if config.dtype == "bfloat16" else torch.float16
     )
 
-    # Init model.
     tokenizer = ft.model.load_tokenizer(model_constraints, cache_dir=config.model_dir)
     model = await load_starting_model(config, metagraph, chain_metadata_store, kwargs)
-    model = model.train()
-    model = model.to(config.device)
+    model = model.train().to(config.device)
 
     logging.info(f"Saving model to path: {model_dir}.")
     ft.mining.save(model, model_dir)
 
-    # Build optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=0.01)
+    
     wandb_run = None
-
-    # If using wandb, start a new run.
     if use_wandb:
-        token = os.getenv("WANDB_API_KEY")
-        if not token:
-            raise ValueError(
-                "To use Wandb, you must set WANDB_API_KEY in your .env file"
-            )
-
-        wandb.login(key=token)
-
         wandb_run = wandb.init(
             name=run_id,
             entity=config.wandb_entity,
@@ -164,99 +126,48 @@ async def main(config: bt.config):
             },
             allow_val_change=True,
         )
-    else:
-        logging.warning(
-            "Not posting run to wandb. Either --offline is specified or the wandb settings are missing."
+
+    best_avg_deviation = math.inf
+    for epoch in range(config.num_epochs if config.num_epochs > 0 else float('inf')):
+        epoch_loss = 0.0
+        for step, batch in enumerate(ft.data_loader(config.batch_size)):
+            optimizer.zero_grad()
+            outputs = model(**batch)
+            loss = outputs.loss
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+
+            if use_wandb:
+                wandb.log({"loss": loss.item()})
+
+        avg_deviation = epoch_loss / (step + 1)
+        logging.info(f"Epoch {epoch}, Avg Loss: {avg_deviation}")
+        
+        if avg_deviation < best_avg_deviation:
+            best_avg_deviation = avg_deviation
+            logging.info(f"New best avg deviation: {best_avg_deviation}")
+            logging.info(f"Saving model to path: {model_dir}.")
+            ft.mining.save(model, model_dir)
+
+    if not config.offline and best_avg_deviation < config.avg_loss_upload_threshold:
+        model_to_upload = ft.mining.load_local_model(
+            model_dir, config.competition_id, model_constraints.kwargs
+        )
+        await ft.mining.push(
+            model_to_upload,
+            config.hf_repo_id,
+            config.competition_id,
+            wallet,
+            update_repo_visibility=config.update_repo_visibility,
+            metadata_store=chain_metadata_store,
         )
 
-    # Start the training loop
-    epoch_step = 0
-    global_step = 0
-    n_acc_steps = 0
-    best_avg_deviation = math.inf
-    accumulation_steps = config.accumulation_steps
-
-    try:
-        while epoch_step < config.num_epochs or config.num_epochs == -1:
-            model.train()
-            total_loss = 0
-            num_batches = 0
-
-            for batch in train_dataloader:  # Assuming `train_dataloader` is defined
-                optimizer.zero_grad()
-
-                # Forward pass
-                inputs = batch['input_ids'].to(config.device)
-                labels = batch['labels'].to(config.device)
-                outputs = model(inputs)
-                
-                # Compute loss (you can use any loss function)
-                loss = model.compute_loss(outputs, labels)
-                total_loss += loss.item()
-
-                # Backward pass
-                loss.backward()
-
-                # Accumulate gradients if necessary
-                if (n_acc_steps + 1) % accumulation_steps == 0:
-                    optimizer.step()
-                    n_acc_steps = 0
-                else:
-                    n_acc_steps += 1
-
-                num_batches += 1
-
-            avg_loss = total_loss / num_batches
-            logging.info(f"Epoch {epoch_step} - Average Loss: {avg_loss}")
-
-            # Save model if it has improved
-            if avg_loss < best_avg_deviation:
-                best_avg_deviation = avg_loss
-                logging.info(f"New best average deviation: {best_avg_deviation}.")
-                logging.info(f"Saving model to path: {model_dir}.")
-                ft.mining.save(model, model_dir)
-
-            epoch_step += 1
-
-        logging.info("Finished training")
-        # Push the model to your run.
-        if not config.offline:
-            if best_avg_deviation < config.avg_loss_upload_threshold:
-                logging.info(
-                    f"Trained model had a best_avg_deviation of {best_avg_deviation} which is below the threshold of {config.avg_loss_upload_threshold}. Uploading to hugging face."
-                )
-
-                # First, reload the best model from the training run.
-                model_to_upload = ft.mining.load_local_model(
-                    model_dir, config.competition_id, model_constraints.kwargs
-                )
-                await ft.mining.push(
-                    model_to_upload,
-                    config.hf_repo_id,
-                    config.competition_id,
-                    wallet,
-                    update_repo_visibility=config.update_repo_visibility,
-                    metadata_store=chain_metadata_store,
-                )
-            else:
-                logging.info(
-                    f"This training run achieved a best_avg_deviation={best_avg_deviation}, which did not meet the upload threshold. Not uploading to hugging face."
-                )
-        else:
-            logging.info(
-                "Not uploading to hugging face because --offline was specified."
-            )
-
-    finally:
-        # Important step.
-        if wandb_run:
-            wandb_run.finish()
-
+    if wandb_run:
+        wandb_run.finish()
 
 if __name__ == "__main__":
-    # Parse and print configuration
     config = neuron_config.miner_config()
-
     if config.list_competitions:
         print(constants.COMPETITION_SCHEDULE_BY_BLOCK)
     else:
