@@ -103,7 +103,10 @@ async def main(config: bt.config):
         torch.bfloat16 if config.dtype == "bfloat16" else torch.float16
     )
 
-    tokenizer = ft.model.load_tokenizer(model_constraints, cache_dir=config.model_dir)
+    tokenizer = ft.model.load_tokenizer(
+    model_constraints, cache_dir=config.model_dir, token=os.getenv("HF_ACCESS_TOKEN")
+)
+
     model = await load_starting_model(config, metagraph, chain_metadata_store, kwargs)
     model = model.train().to(config.device)
 
