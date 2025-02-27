@@ -7,5 +7,8 @@ def load_tokenizer(
 ) -> PreTrainedTokenizer:
     """Returns the fixed tokenizer for the given model constraints."""
     return AutoTokenizer.from_pretrained(
-        model_constraints.tokenizer, cache_dir=cache_dir
-    )
+    pretrained_model_name_or_path=model_constraints.model_name,
+    cache_dir=cache_dir,
+    use_auth_token=os.getenv("HF_ACCESS_TOKEN")  # Correct authentication method
+)
+
